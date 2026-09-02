@@ -182,16 +182,20 @@ def get_combat_power(ocid: str, date_str: str) -> tuple[int | None, str | None]:
     return (cp, None) if cp is not None else (None, "stat_key_missing")
 
 
+class RankingUnavailable(Exception):
+    """랭킹 슬라이스를 못 받음 (보통 일 한도). 해당 코호트만 건너뛰고 다음 날 재개."""
+
+
 def fetch_ranking_slice(cohort: dict) -> list[str]:
     lo, hi = page_rank_range(cohort["page"])
     data = _get("/ranking/overall",
                 {"date": ANCHOR, "world_type": RANKING_WORLD_TYPE, "page": cohort["page"]})
     if "__error__" in data:
-        sys.exit(f"[{cohort['name']}] 랭킹 조회 실패: {data['__error__']}")
+        raise RankingUnavailable(f"[{cohort['name']}] 랭킹 조회 실패: {data['__error__']}")
     names = filter_ranking(data.get("ranking", []), lo, hi)
     lvls = {r["character_level"] for r in data.get("ranking", [])}
     if not names:
-        sys.exit(f"[{cohort['name']}] 랭킹 슬라이스 0명 — page 확인")
+        raise RankingUnavailable(f"[{cohort['name']}] 랭킹 슬라이스 0명 — page 확인")
     print(f"  랭킹 page {cohort['page']}: {len(names)}명, 레벨 {sorted(lvls)} "
           f"(목표 {cohort['target_level']})")
     return names
@@ -221,15 +225,17 @@ def _append_rows(path: Path, rows: list[dict]) -> None:
         w.writerows(rows)
 
 
-def collect_cohort(cohort: dict) -> None:
+def collect_cohort(cohort: dict) -> bool:
+    """수집 진행. 더 할 게 있으면(중단됨) False, 이 코호트 완료면 True."""
     out = DATA_DIR / f"cohort_{cohort['name']}.csv"
     done = _load_done(out)
     names = sample_cohort(fetch_ranking_slice(cohort), cohort["name"])
     ddates = daily_dates(ANCHOR, DAILY_DAYS)
     sdates = set(stat_dates(ANCHOR, STAT_OFFSETS))
-    todo_dates = [d for d in ddates if any((nm, d) not in done for nm in names)]
-    print(f"  {cohort['name']}: {len(names)}명 × {len(ddates)}일, "
-          f"미수집 {sum((nm, d) not in done for nm in names for d in ddates)}행")
+    remaining = sum((nm, d) not in done for nm in names for d in ddates)
+    print(f"  {cohort['name']}: {len(names)}명 × {len(ddates)}일, 미수집 {remaining}행")
+    if remaining == 0:
+        return True
 
     for i, nm in enumerate(names, 1):
         pending = [d for d in ddates if (nm, d) not in done]
@@ -255,25 +261,32 @@ def collect_cohort(cohort: dict) -> None:
         print(f"  [{i:3}/{len(names)}] {nm}: +{len(keep)}행"
               f"{f' (보류 {gap})' if gap else ''}  (누적 콜 {_call_count})")
         if gap or _call_count >= DAILY_CALL_BUDGET:
-            print(f"\n한도/일시실패 감지 — 중단. 다음 날 다시 실행하면 이어서 수집.")
-            return
+            print("\n한도/일시실패 감지 — 중단. 다음 날 다시 실행하면 이어서 수집.")
+            return False
+    return True
 
 
 def main() -> None:
     DATA_DIR.mkdir(exist_ok=True)
-    hit_limit = False
+    stopped = False
     for cohort in COHORTS:
         print(f"수집: {cohort['name']} — {cohort['desc']}")
-        collect_cohort(cohort)
-        if _call_count >= DAILY_CALL_BUDGET:
-            hit_limit = True
+        try:
+            done_ok = collect_cohort(cohort)
+        except RankingUnavailable as e:
+            print(f"  {e} — 이 코호트는 건너뜀 (다음 실행에서 재시도)")
+            stopped = True
             break
+        if not done_ok or _call_count >= DAILY_CALL_BUDGET:
+            stopped = True
+            break
+
     print(f"\n총 API 호출 수: {_call_count}")
     expected = SAMPLE_N * DAILY_DAYS
     incomplete = [c["name"] for c in COHORTS
                   if len(_load_done(DATA_DIR / f"cohort_{c['name']}.csv")) < expected * 0.98]
-    if hit_limit or incomplete:
-        print(f"미완료 코호트: {incomplete or '(한도 도달)'} — 내일 다시 `python collect.py` 실행.")
+    if stopped or incomplete:
+        print(f"미완료: {incomplete or '(한도 도달)'} — 내일 다시 `python collect.py` 실행.")
     else:
         print("모든 코호트 수집 완료.")
 
