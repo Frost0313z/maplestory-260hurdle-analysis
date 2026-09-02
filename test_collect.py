@@ -46,17 +46,25 @@ def test_classify_http_error():
 
 
 def test_sample_cohort_deterministic_and_independent():
-    names = [f"user{i}" for i in range(200)]
-    a = collect.sample_cohort(names, "at260")
-    assert a == collect.sample_cohort(names, "at260")     # 재현 가능
-    assert a != collect.sample_cohort(names, "approach")  # 코호트 간 독립
-    assert len(a) == collect.SAMPLE_N
+    names = [f"user{i}" for i in range(1000)]
+    a = collect.sample_cohort(names, "at260", n=300)
+    assert a == collect.sample_cohort(names, "at260", n=300)     # 재현 가능
+    assert a != collect.sample_cohort(names, "approach", n=300)  # 코호트 간 독립
+    assert len(a) == 300
     assert set(a).issubset(names)
-    assert len(set(a)) == len(a)                           # 중복 없음
+    assert len(set(a)) == len(a)                                 # 중복 없음
 
 
-def test_sample_cohort_small_pool():
-    assert len(collect.sample_cohort(["a", "b"], "x")) == 2
+def test_sample_cohort_prefix_stable():
+    """n 을 키워도 앞 n 명은 그대로 → 증분 수집 가능."""
+    names = [f"user{i}" for i in range(1000)]
+    small = collect.sample_cohort(names, "at260", n=100)
+    big = collect.sample_cohort(names, "at260", n=300)
+    assert big[:100] == small
+
+
+def test_sample_cohort_dedup_and_small_pool():
+    assert len(collect.sample_cohort(["a", "b", "a"], "x", n=10)) == 2   # 중복 제거
 
 
 if __name__ == "__main__":

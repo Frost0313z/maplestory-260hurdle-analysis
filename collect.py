@@ -33,23 +33,25 @@ TIMEOUT = 10
 MAX_RETRY = 3
 BACKOFF = [1, 2, 4]
 RANDOM_SEED = 42
-# live_ (정식) 키는 한도가 넉넉 → 전체 수집(~12,000콜)을 1회에 완주. 안전 상한으로만 사용.
-# test_ (개발단계) 키면 1000 으로 낮추고 여러 날 나눠 실행.
-DAILY_CALL_BUDGET = 15000
+# live_ (정식) 키는 한도가 넉넉 → 전체 수집(n=300 기준 ~36,000콜, ~2.5h)을 1회에 완주.
+# 상한은 폭주 방지용. test_ (개발단계) 키면 1000 으로 낮추고 여러 날 나눠 실행.
+DAILY_CALL_BUDGET = 40000
 DATA_DIR = Path(__file__).parent / "data"
 
 RANKING_WORLD_TYPE = 0          # 실측 확인 완료: 0=일반 서버
 ANCHOR = "2026-06-18"          # 여름 성장 이벤트 시작일 = 시계열 앵커
 DAILY_DAYS = 25               # D+0 .. D+24 매일 basic
 STAT_OFFSETS = [0, 8, 16, 24]  # 전투력은 이 오프셋에만
-SAMPLE_N = 100               # 코호트당 표본
+SAMPLE_N = 300               # 코호트당 표본 (n 을 키워도 앞 n 명은 증분 유지 — sample_cohort 참고)
+RANKING_PAGE_SPAN = 15       # 목표 page ± 이 범위의 인접 페이지를 풀링 (한 page = 200명)
 
 # 실측 랭킹 page↔레벨 (2026-06-18, world_type=0). page N = 랭킹 (N-1)*200+1 .. N*200
+# level_tol: 목표 레벨 ± 이 값 이내만 채택. at260(플래토 탈출률)은 정확히 260 만 → 0.
 COHORTS = [
-    dict(name="approach", page=21000, target_level=251, desc="허들 접근 (260 미만)"),
-    dict(name="at260",    page=15000, target_level=260, desc="260 정체 플래토 (rank ~3M)"),
-    dict(name="past260",  page=10000, target_level=262, desc="260 직후"),
-    dict(name="burnend",  page=2500,  target_level=281, desc="버닝 BEYOND 종료 지점"),
+    dict(name="approach", page=21000, target_level=251, level_tol=1, desc="허들 접근 (260 미만)"),
+    dict(name="at260",    page=15000, target_level=260, level_tol=0, desc="260 정체 플래토 (rank ~3M)"),
+    dict(name="past260",  page=10000, target_level=262, level_tol=1, desc="260 직후"),
+    dict(name="burnend",  page=2500,  target_level=281, level_tol=1, desc="버닝 BEYOND 종료 지점"),
 ]
 
 CSV_COLUMNS = ["cohort", "character_name", "ocid", "date",
@@ -97,10 +99,15 @@ def classify_http_error(status: int) -> str:
 
 
 def sample_cohort(names: list[str], cohort_name: str, n: int | None = None) -> list[str]:
-    """코호트명으로 seed 분기 → 코호트 간 독립·재현 가능 (스펙 §3.2)."""
+    """풀을 코호트별 seed 로 셔플한 뒤 앞 n 명.
+
+    셔플 후 슬라이스 → 같은 풀·seed 면 n 을 키워도 앞 n 명이 그대로 유지(증분 수집 가능).
+    코호트명으로 seed 분기 → 코호트 간 표본 독립.
+    """
     n = SAMPLE_N if n is None else n
-    rng = random.Random(f"{RANDOM_SEED}-{cohort_name}")
-    return rng.sample(names, min(n, len(names)))
+    pool = list(dict.fromkeys(names))          # 중복 제거, 첫 등장 순서 보존
+    random.Random(f"{RANDOM_SEED}-{cohort_name}").shuffle(pool)
+    return pool[:n]
 
 
 # 다음 실행에서 재시도할 일시적 실패 (할당량·서버·타임아웃). 이 행은 저장하지 않는다.
@@ -188,19 +195,30 @@ class RankingUnavailable(Exception):
     """랭킹 슬라이스를 못 받음 (보통 일 한도). 해당 코호트만 건너뛰고 다음 날 재개."""
 
 
-def fetch_ranking_slice(cohort: dict) -> list[str]:
-    lo, hi = page_rank_range(cohort["page"])
-    data = _get("/ranking/overall",
-                {"date": ANCHOR, "world_type": RANKING_WORLD_TYPE, "page": cohort["page"]})
-    if "__error__" in data:
-        raise RankingUnavailable(f"[{cohort['name']}] 랭킹 조회 실패: {data['__error__']}")
-    names = filter_ranking(data.get("ranking", []), lo, hi)
-    lvls = {r["character_level"] for r in data.get("ranking", [])}
-    if not names:
-        raise RankingUnavailable(f"[{cohort['name']}] 랭킹 슬라이스 0명 — page 확인")
-    print(f"  랭킹 page {cohort['page']}: {len(names)}명, 레벨 {sorted(lvls)} "
-          f"(목표 {cohort['target_level']})")
-    return names
+def fetch_ranking_pool(cohort: dict) -> list[str]:
+    """목표 page ± RANKING_PAGE_SPAN 의 인접 페이지들에서
+    `target_level ± level_tol` 인 캐릭터명을 모아 풀(중복 제거)을 만든다.
+
+    페이지를 낮은 번호(높은 랭킹)부터 결정적 순서로 훑으므로 풀 순서는 재현 가능.
+    """
+    center, span = cohort["page"], RANKING_PAGE_SPAN
+    tol, target = cohort["level_tol"], cohort["target_level"]
+    seen, pool, levels = set(), [], set()
+    for p in range(max(1, center - span), center + span + 1):
+        data = _get("/ranking/overall",
+                    {"date": ANCHOR, "world_type": RANKING_WORLD_TYPE, "page": p})
+        if "__error__" in data:
+            raise RankingUnavailable(f"[{cohort['name']}] 랭킹 page {p}: {data['__error__']}")
+        for r in data.get("ranking", []):
+            if abs(r["character_level"] - target) <= tol and r["character_name"] not in seen:
+                seen.add(r["character_name"])
+                pool.append(r["character_name"])
+                levels.add(r["character_level"])
+    if len(pool) < SAMPLE_N:
+        raise RankingUnavailable(
+            f"[{cohort['name']}] 풀 {len(pool)}명 < 목표 {SAMPLE_N} — SPAN/tol 조정 필요")
+    print(f"  {cohort['name']}: 풀 {len(pool)}명, 레벨 {sorted(levels)} (목표 {target}±{tol})")
+    return pool
 
 
 # ---- 수집 (행 단위 즉시 append, 재개 가능) ------------------------------
@@ -231,7 +249,7 @@ def collect_cohort(cohort: dict) -> bool:
     """수집 진행. 더 할 게 있으면(중단됨) False, 이 코호트 완료면 True."""
     out = DATA_DIR / f"cohort_{cohort['name']}.csv"
     done = _load_done(out)
-    names = sample_cohort(fetch_ranking_slice(cohort), cohort["name"])
+    names = sample_cohort(fetch_ranking_pool(cohort), cohort["name"])
     ddates = daily_dates(ANCHOR, DAILY_DAYS)
     sdates = set(stat_dates(ANCHOR, STAT_OFFSETS))
     remaining = sum((nm, d) not in done for nm in names for d in ddates)
