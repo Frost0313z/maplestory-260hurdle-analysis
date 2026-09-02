@@ -2,3 +2,6 @@ __pycache__/
 .env
 .ipynb_checkpoints/
 .venv/
+data_collect.log
+nohup.out
+data_validate/

@@ -20,6 +20,12 @@ from pathlib import Path
 
 import requests
 
+# Windows 콘솔(cp949)에서도 로그가 안 깨지도록. 수집이 몇 시간 돌므로 예외로 죽지 않게.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
 # ---- 수집 파라미터 (스펙 §3.1) --------------------------------------------
 BASE = "https://open.api.nexon.com/maplestory/v1"
 REQ_SLEEP = 0.25
