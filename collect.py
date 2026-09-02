@@ -33,7 +33,9 @@ TIMEOUT = 10
 MAX_RETRY = 3
 BACKOFF = [1, 2, 4]
 RANDOM_SEED = 42
-DAILY_CALL_BUDGET = 1000
+# live_ (정식) 키는 한도가 넉넉 → 전체 수집(~12,000콜)을 1회에 완주. 안전 상한으로만 사용.
+# test_ (개발단계) 키면 1000 으로 낮추고 여러 날 나눠 실행.
+DAILY_CALL_BUDGET = 15000
 DATA_DIR = Path(__file__).parent / "data"
 
 RANKING_WORLD_TYPE = 0          # 실측 확인 완료: 0=일반 서버
