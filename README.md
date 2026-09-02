@@ -27,10 +27,12 @@ requirements.txt
 
 ```bash
 pip install -r requirements.txt
-export NXOPEN_API_KEY=...     # 넥슨 오픈 API 키 (환경변수, 커밋 금지)
+cp .env.example .env          # .env 에 NXOPEN_API_KEY 값 채우기 (커밋 금지, .gitignore 처리됨)
 python collect.py            # data/cohort_*.csv 생성
 jupyter notebook analysis.ipynb
 ```
+
+> 키는 `.env` 파일 대신 셸 환경변수(`$env:NXOPEN_API_KEY = "..."`)로 줘도 됩니다.
 
 ## 데이터 출처 · 라이선스
 

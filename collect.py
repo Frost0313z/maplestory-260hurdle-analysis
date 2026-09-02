@@ -90,10 +90,24 @@ def sample_cohort(names: list[str], cohort_name: str) -> list[str]:
 
 
 # ---- API 호출 -------------------------------------------------------------
+def _load_dotenv() -> None:
+    """같은 폴더의 .env 를 os.environ 에 채운다 (이미 설정된 값은 건드리지 않음)."""
+    env = Path(__file__).parent / ".env"
+    if not env.exists():
+        return
+    for line in env.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
 def _api_key() -> str:
+    _load_dotenv()
     key = os.environ.get("NXOPEN_API_KEY")
     if not key:
-        sys.exit("NXOPEN_API_KEY 환경변수 없음 — 넥슨 오픈 API 키를 설정하세요.")
+        sys.exit("NXOPEN_API_KEY 없음 — .env 파일(.env.example 참고) 또는 환경변수로 설정하세요.")
     return key
 
 
