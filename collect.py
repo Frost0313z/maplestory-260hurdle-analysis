@@ -1,11 +1,16 @@
-"""넥슨 오픈 API로 4개 코호트 × 5체크포인트 캐릭터 스냅샷을 수집한다.
+"""넥슨 오픈 API로 레벨대별 코호트의 일간 소급 스냅샷을 수집한다.
 
-스펙: 메이플스토리_이벤트분석_스펙문서.md  §2(API·재시도), §3(구조), §4.1(CSV)
-실행: NXOPEN_API_KEY 환경변수 설정 후  `python collect.py`
-     끊기면 다시 실행 → 완성된 data/cohort_*.csv 는 건너뛴다.
+설계: 실측으로 계획문서 코호트를 재정의 (계획문서 "설계 변경 2", 스펙 §3/§6).
+  - 랭킹 page↔레벨 실측 매핑으로 260 허들 주변 4개 레벨대 코호트 고정
+  - 앵커일(2026-06-18)부터 DAILY_DAYS 일간 매일 레벨 스냅샷 = 시계열
+  - 전투력(stat)은 비용이 커서 STAT_OFFSETS 날짜에만
+실행: NXOPEN_API_KEY 설정 후  `python collect.py`
+  개발단계 일 1,000콜 한도 → 여러 날 나눠 실행. 앵커일이 과거 고정이라 데이터 불변.
+  이미 수집된 (캐릭터, 날짜) 행은 건너뛴다 (재개 가능, 행 단위로 즉시 append).
 """
 from __future__ import annotations
 
+import csv
 import os
 import sys
 import time
@@ -14,55 +19,58 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import requests
-import pandas as pd
 
-# ---- 상수 (스펙 §3.1) --------------------------------------------------------
+# ---- 수집 파라미터 (스펙 §3.1) --------------------------------------------
 BASE = "https://open.api.nexon.com/maplestory/v1"
-REQ_SLEEP = 0.25            # 요청 간 간격. 개발 한도 5회/초 아래(초당 4회)
+REQ_SLEEP = 0.25
 TIMEOUT = 10
-MAX_RETRY = 3              # 429/5xx 재시도 횟수
-BACKOFF = [1, 2, 4]        # 지수 백오프(초)
+MAX_RETRY = 3
+BACKOFF = [1, 2, 4]
 RANDOM_SEED = 42
-SAMPLE_N = 22
 DAILY_CALL_BUDGET = 1000
 DATA_DIR = Path(__file__).parent / "data"
 
-# TODO(verify): 전체 통합 랭킹 파라미터 — 첫 실행 시 1건 실호출로 확인 (스펙 §2)
-RANKING_WORLD_TYPE = 0     # 0=일반 서버, 1=리부트
+RANKING_WORLD_TYPE = 0          # 실측 확인 완료: 0=일반 서버
+ANCHOR = "2026-06-18"          # 여름 성장 이벤트 시작일 = 시계열 앵커
+DAILY_DAYS = 25               # D+0 .. D+24 매일 basic
+STAT_OFFSETS = [0, 8, 16, 24]  # 전투력은 이 오프셋에만
+SAMPLE_N = 100               # 코호트당 표본
 
-CHECKPOINT_OFFSETS = [1, 3, 7, 14, 30]   # D+N
-
+# 실측 랭킹 page↔레벨 (2026-06-18, world_type=0). page N = 랭킹 (N-1)*200+1 .. N*200
 COHORTS = [
-    dict(name="b_event", anchor_date="2026-06-18", ranking_page=3000,
-         rank_lo=599_801, rank_hi=600_000, expected_level=250),
-    dict(name="b_off", anchor_date="2026-05-01", ranking_page=3000,
-         rank_lo=599_548, rank_hi=599_747, expected_level=248),
-    dict(name="c1", anchor_date="2026-06-18", ranking_page=300,
-         rank_lo=59_801, rank_hi=60_000, expected_level=281),
-    dict(name="c2", anchor_date="2026-06-18", ranking_page=10000,
-         rank_lo=1_999_801, rank_hi=2_000_000, expected_level=200),
+    dict(name="approach", page=21000, target_level=251, desc="허들 접근 (260 미만)"),
+    dict(name="at260",    page=15000, target_level=260, desc="260 정체 플래토 (rank ~3M)"),
+    dict(name="past260",  page=10000, target_level=262, desc="260 직후"),
+    dict(name="burnend",  page=2500,  target_level=281, desc="버닝 BEYOND 종료 지점"),
 ]
 
-CSV_COLUMNS = ["cohort", "character_name", "ocid", "checkpoint", "date",
+CSV_COLUMNS = ["cohort", "character_name", "ocid", "date",
                "level", "exp", "exp_rate", "combat_power", "error_code"]
 
-_call_count = 0   # ponytail: 모듈 전역 카운터. 단일 스레드 스크립트라 충분
+_call_count = 0
+_ocid_cache: dict[str, str | None] = {}
 
 
-# ---- 순수 헬퍼 (네트워크 없음 — test_collect.py 대상) -----------------------
-def checkpoints(anchor_date: str) -> list[tuple[str, str]]:
-    """앵커일 → [("D+1", "2026-06-19"), ("D+3", ...), ...]"""
-    a = date.fromisoformat(anchor_date)
-    return [(f"D+{n}", (a + timedelta(days=n)).isoformat()) for n in CHECKPOINT_OFFSETS]
+# ---- 순수 헬퍼 (네트워크 없음 — test_collect.py) -------------------------
+def daily_dates(anchor: str, n: int) -> list[str]:
+    a = date.fromisoformat(anchor)
+    return [(a + timedelta(days=i)).isoformat() for i in range(n)]
+
+
+def stat_dates(anchor: str, offsets: list[int]) -> list[str]:
+    a = date.fromisoformat(anchor)
+    return [(a + timedelta(days=o)).isoformat() for o in offsets]
 
 
 def filter_ranking(rows: list[dict], lo: int, hi: int) -> list[str]:
-    """랭킹 응답에서 lo <= ranking <= hi 인 character_name 만."""
     return [r["character_name"] for r in rows if lo <= r["ranking"] <= hi]
 
 
+def page_rank_range(page: int) -> tuple[int, int]:
+    return (page - 1) * 200 + 1, page * 200
+
+
 def parse_combat_power(final_stat: list[dict] | None) -> int | None:
-    """스탯 응답의 final_stat 리스트에서 '전투력' 값(int)을 뽑는다."""
     for s in final_stat or []:
         if s.get("stat_name") == "전투력":
             try:
@@ -80,29 +88,18 @@ def classify_http_error(status: int) -> str:
     return "http_5xx_giveup"
 
 
-def sample_cohort(names: list[str], cohort_name: str) -> list[str]:
-    """코호트명으로 seed 를 분기해 무작위 SAMPLE_N 명 추출 (스펙 §3.2).
-
-    코호트별 seed 분기 → 코호트 간 표본이 서로 독립이면서 재현 가능.
-    """
+def sample_cohort(names: list[str], cohort_name: str, n: int | None = None) -> list[str]:
+    """코호트명으로 seed 분기 → 코호트 간 독립·재현 가능 (스펙 §3.2)."""
+    n = SAMPLE_N if n is None else n
     rng = random.Random(f"{RANDOM_SEED}-{cohort_name}")
-    return rng.sample(names, min(SAMPLE_N, len(names)))
+    return rng.sample(names, min(n, len(names)))
 
 
-# ---- API 호출 -------------------------------------------------------------
-def _load_dotenv() -> None:
-    """같은 폴더의 .env 를 os.environ 에 채운다 (이미 설정된 값은 건드리지 않음)."""
-    env = Path(__file__).parent / ".env"
-    if not env.exists():
-        return
-    for line in env.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+# 다음 실행에서 재시도할 일시적 실패 (할당량·서버·타임아웃). 이 행은 저장하지 않는다.
+RETRYABLE_ERRORS = {"http_429_giveup", "http_5xx_giveup", "timeout"}
 
 
+# ---- API ---------------------------------------------------------------
 def _api_key() -> str:
     _load_dotenv()
     key = os.environ.get("NXOPEN_API_KEY")
@@ -111,14 +108,19 @@ def _api_key() -> str:
     return key
 
 
-def _get(path: str, params: dict) -> dict:
-    """GET + 재시도 규약 (스펙 §2).
+def _load_dotenv() -> None:
+    env = Path(__file__).parent / ".env"
+    if not env.exists():
+        return
+    for line in env.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-    성공: 응답 JSON(dict). 실패: {"__error__": <code>}.
-    - 429 / 5xx  : 1→2→4초 백오프로 최대 MAX_RETRY 회, 이후 give up
-    - 404        : 즉시 포기
-    - Timeout    : 1회 재시도 후 포기
-    """
+
+def _get(path: str, params: dict) -> dict:
+    """GET + 재시도 규약 (스펙 §2). 성공: JSON dict. 실패: {"__error__": code}."""
     global _call_count
     url = f"{BASE}{path}"
     headers = {"x-nxopen-api-key": _api_key()}
@@ -135,7 +137,6 @@ def _get(path: str, params: dict) -> dict:
                 continue
             return {"__error__": "timeout"}
         time.sleep(REQ_SLEEP)
-
         if resp.status_code == 200:
             return resp.json()
         if resp.status_code == 404:
@@ -146,16 +147,19 @@ def _get(path: str, params: dict) -> dict:
                 attempt += 1
                 continue
             return {"__error__": classify_http_error(resp.status_code)}
-        return {"__error__": f"http_{resp.status_code}"}   # 기타 4xx: 재시도 무의미
+        return {"__error__": f"http_{resp.status_code}"}
 
 
 def get_ocid(name: str) -> str | None:
+    if name in _ocid_cache:
+        return _ocid_cache[name]
     data = _get("/id", {"character_name": name})
-    return None if "__error__" in data else data.get("ocid")
+    ocid = None if "__error__" in data else data.get("ocid")
+    _ocid_cache[name] = ocid
+    return ocid
 
 
 def get_basic(ocid: str, date_str: str) -> dict:
-    """→ {"level","exp","exp_rate"} 또는 {"error_code": ...}"""
     data = _get("/character/basic", {"ocid": ocid, "date": date_str})
     if "__error__" in data:
         return {"error_code": data["__error__"]}
@@ -165,7 +169,6 @@ def get_basic(ocid: str, date_str: str) -> dict:
 
 
 def get_combat_power(ocid: str, date_str: str) -> tuple[int | None, str | None]:
-    """→ (전투력, error_code). 성공 시 (int, None), 실패 시 (None, code)."""
     data = _get("/character/stat", {"ocid": ocid, "date": date_str})
     if "__error__" in data:
         return None, data["__error__"]
@@ -174,65 +177,99 @@ def get_combat_power(ocid: str, date_str: str) -> tuple[int | None, str | None]:
 
 
 def fetch_ranking_slice(cohort: dict) -> list[str]:
-    """앵커일 랭킹 page 1콜 → rank_lo~rank_hi 구간의 캐릭터명 리스트."""
-    data = _get("/ranking/overall", {
-        "date": cohort["anchor_date"],
-        "world_type": RANKING_WORLD_TYPE,
-        "page": cohort["ranking_page"],
-    })
+    lo, hi = page_rank_range(cohort["page"])
+    data = _get("/ranking/overall",
+                {"date": ANCHOR, "world_type": RANKING_WORLD_TYPE, "page": cohort["page"]})
     if "__error__" in data:
         sys.exit(f"[{cohort['name']}] 랭킹 조회 실패: {data['__error__']}")
-    names = filter_ranking(data.get("ranking", []), cohort["rank_lo"], cohort["rank_hi"])
+    names = filter_ranking(data.get("ranking", []), lo, hi)
+    lvls = {r["character_level"] for r in data.get("ranking", [])}
     if not names:
-        sys.exit(f"[{cohort['name']}] 랭킹 슬라이스 0명 — page/구간/날짜 확인")
+        sys.exit(f"[{cohort['name']}] 랭킹 슬라이스 0명 — page 확인")
+    print(f"  랭킹 page {cohort['page']}: {len(names)}명, 레벨 {sorted(lvls)} "
+          f"(목표 {cohort['target_level']})")
     return names
 
 
-# ---- 수집 --------------------------------------------------------------
-def _row(cohort: dict, name: str, ocid: str, checkpoint: str, date_str: str, *,
-         level=None, exp=None, exp_rate=None, combat_power=None, error_code=None) -> dict:
-    return dict(cohort=cohort["name"], character_name=name, ocid=ocid,
-               checkpoint=checkpoint, date=date_str, level=level, exp=exp,
-               exp_rate=exp_rate, combat_power=combat_power, error_code=error_code)
+# ---- 수집 (행 단위 즉시 append, 재개 가능) ------------------------------
+def _row(cohort, name, ocid, date_str, *, level=None, exp=None, exp_rate=None,
+         combat_power=None, error_code=None) -> dict:
+    return dict(cohort=cohort["name"], character_name=name, ocid=ocid, date=date_str,
+               level=level, exp=exp, exp_rate=exp_rate,
+               combat_power=combat_power, error_code=error_code)
 
 
-def collect_cohort(cohort: dict) -> pd.DataFrame:
-    """22명 × 5체크포인트. 각 시점 basic + stat 2콜. long-format DataFrame."""
+def _load_done(path: Path) -> set[tuple[str, str]]:
+    if not path.exists():
+        return set()
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        return {(r["character_name"], r["date"]) for r in csv.DictReader(f)}
+
+
+def _append_rows(path: Path, rows: list[dict]) -> None:
+    new = not path.exists()
+    with path.open("a", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        if new:
+            w.writeheader()
+        w.writerows(rows)
+
+
+def collect_cohort(cohort: dict) -> None:
+    out = DATA_DIR / f"cohort_{cohort['name']}.csv"
+    done = _load_done(out)
     names = sample_cohort(fetch_ranking_slice(cohort), cohort["name"])
-    cps = checkpoints(cohort["anchor_date"])
-    rows: list[dict] = []
+    ddates = daily_dates(ANCHOR, DAILY_DAYS)
+    sdates = set(stat_dates(ANCHOR, STAT_OFFSETS))
+    todo_dates = [d for d in ddates if any((nm, d) not in done for nm in names)]
+    print(f"  {cohort['name']}: {len(names)}명 × {len(ddates)}일, "
+          f"미수집 {sum((nm, d) not in done for nm in names for d in ddates)}행")
+
     for i, nm in enumerate(names, 1):
-        ocid = get_ocid(nm)
-        if ocid is None:
-            rows += [_row(cohort, nm, "", label, d, error_code="ocid_failed")
-                     for label, d in cps]
-            print(f"  [{i:2}/{len(names)}] {nm}: ocid 실패")
+        pending = [d for d in ddates if (nm, d) not in done]
+        if not pending:
             continue
-        for label, d in cps:
+        ocid = get_ocid(nm)
+        buf: list[dict] = []
+        for d in pending:
+            if ocid is None:
+                buf.append(_row(cohort, nm, "", d, error_code="ocid_failed"))
+                continue
             basic = get_basic(ocid, d)
-            cp, cp_err = get_combat_power(ocid, d)
-            rows.append(_row(cohort, nm, ocid, label, d,
-                             level=basic.get("level"), exp=basic.get("exp"),
-                             exp_rate=basic.get("exp_rate"), combat_power=cp,
-                             error_code=basic.get("error_code") or cp_err))
-        print(f"  [{i:2}/{len(names)}] {nm}: ok")
-    return pd.DataFrame(rows, columns=CSV_COLUMNS)
+            cp, cp_err = (None, None)
+            if d in sdates and "error_code" not in basic:
+                cp, cp_err = get_combat_power(ocid, d)
+            buf.append(_row(cohort, nm, ocid, d,
+                            level=basic.get("level"), exp=basic.get("exp"),
+                            exp_rate=basic.get("exp_rate"), combat_power=cp,
+                            error_code=basic.get("error_code") or cp_err))
+        keep = [r for r in buf if r["error_code"] not in RETRYABLE_ERRORS]
+        _append_rows(out, keep)   # 캐릭터 1명 끝날 때마다 디스크 반영 (일시 실패 행은 보류)
+        gap = len(buf) - len(keep)
+        print(f"  [{i:3}/{len(names)}] {nm}: +{len(keep)}행"
+              f"{f' (보류 {gap})' if gap else ''}  (누적 콜 {_call_count})")
+        if gap or _call_count >= DAILY_CALL_BUDGET:
+            print(f"\n한도/일시실패 감지 — 중단. 다음 날 다시 실행하면 이어서 수집.")
+            return
 
 
 def main() -> None:
     DATA_DIR.mkdir(exist_ok=True)
+    hit_limit = False
     for cohort in COHORTS:
-        out = DATA_DIR / f"cohort_{cohort['name']}.csv"
-        if out.exists():
-            print(f"skip {out.name} (이미 존재)")
-            continue
-        print(f"수집: {cohort['name']} (anchor {cohort['anchor_date']})")
-        df = collect_cohort(cohort)
-        df.to_csv(out, index=False, encoding="utf-8-sig")
-        print(f"  → {out.name}: {len(df)}행, 실패 {df['error_code'].notna().sum()}행")
+        print(f"수집: {cohort['name']} — {cohort['desc']}")
+        collect_cohort(cohort)
+        if _call_count >= DAILY_CALL_BUDGET:
+            hit_limit = True
+            break
     print(f"\n총 API 호출 수: {_call_count}")
-    if _call_count > DAILY_CALL_BUDGET:
-        print(f"경고: 개발단계 일 한도 {DAILY_CALL_BUDGET} 초과 — 다음 날 이어서 실행")
+    expected = SAMPLE_N * DAILY_DAYS
+    incomplete = [c["name"] for c in COHORTS
+                  if len(_load_done(DATA_DIR / f"cohort_{c['name']}.csv")) < expected * 0.98]
+    if hit_limit or incomplete:
+        print(f"미완료 코호트: {incomplete or '(한도 도달)'} — 내일 다시 `python collect.py` 실행.")
+    else:
+        print("모든 코호트 수집 완료.")
 
 
 if __name__ == "__main__":
