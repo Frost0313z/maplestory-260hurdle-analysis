@@ -5,13 +5,19 @@
 
 ## 현재 상태
 
-수집·분석·리포트 완료. **[REPORT.md](REPORT.md)** 참고.
+**Part 1** (260 허들) 수집·분석·리포트 완료 → **[REPORT.md](REPORT.md)**.
+**Part 2** (260 이후 상시 progression 전환) 설계 단계 — `collect_panel.py` 준비 완료, 대량 수집 전.
 
-핵심 결과 요약:
+Part 1 핵심 결과:
 - 랭킹 통합 3M위 근방(Lv.251~262) 캐릭터는 35일간 99% 이상이 레벨을 전혀 올리지 않음
-- 실제로 오르던 인구(`climb`, 모멘텀 스크리닝)조차 260 도달 18%, 그중 91%가 **정확히 260에서 정지**, 270+ 폭주 0명
-- 정지가 261이 아니라 정확히 260 + 진행도 ≈0 → 유니온 부캐 파킹 + **버닝 BEYOND 지정 홀드**(260에서 지정, 261이면 손해)의 서명
+- 실제로 오르던 인구(`climb`, 모멘텀 스크리닝)조차 260 도달 18%, 그중 **260→261 전환율이 매우 낮음**
+  (post-260 관측창 ≥14일 확보해도 13% — 관측 기간 부족 아님, robustness check 통과), 270+ 도달 0명
+- 260 정지의 상당수는 실패가 아닐 수 있음 (유니온 파킹 / 하이퍼버닝 목표점 / BEYOND 지정 분기) —
+  단 능동적 파킹과 계정 이탈은 스냅샷으로 구분 불가
 - 활동성은 레벨대(251→281)가 아니라 전투력(17만→3천만)을 따라 9%→64%; 실질 성장률로 좁히면 251·260·262 = 5~10%, 281만 32%
+
+Part 2 Business Question: *"방학 이벤트에서 성장한 캐릭터 중 누가 260 이후 상시 progression으로
+전환되는가? 그 차이를 조기 식별해 Seasonal User를 Core User로 전환할 개입은?"* (REPORT.md §14)
 
 | 문서 | 내용 |
 |---|---|
@@ -22,15 +28,20 @@
 ## 산출물
 
 ```
-collect.py            # 넥슨 API 수집 스크립트 (일간 소급, (캐릭터,날짜) 단위 재개, climb 모멘텀 스크리닝)
-analysis.ipynb        # 정제·시계열 분석·시각화
-REPORT.md             # 분석 리포트
+collect.py            # Part 1 수집 (일간 소급, (캐릭터,날짜) 단위 재개, climb 모멘텀 스크리닝)
+analysis.ipynb        # Part 1 정제·시계열 분석·시각화
+REPORT.md             # 분석 리포트 (§14 = Part 2 방향)
 data/cohort_*.csv     # 5코호트 원본 (approach/at260/past260/burnend/climb, 계 70,000행)
 data/cohort_climb_roster.txt              # climb 스크리닝 통과 명단 캐시
 data/breakthrough_retention_summary.csv   # 코호트×날짜 집계
 data/stagnation_pooled.csv                # 정체 시작 레벨 (4코호트 풀링)
 images/01~06*.png     # 돌파 곡선 / 8일 리텐션 / 정체 지도 / 성장 궤적 / 전투력 성장 / climb 궤적
 requirements.txt
+
+# Part 2 (설계 단계, 대량 수집 전)
+endpoint_feasibility_probe.md   # 캐릭터 endpoint 소급 범위 실측 (2023-12-22, ranking 4개월과 다름)
+panel_config.py                 # 이벤트 일정·스냅샷 격자·endpoint (코드에서 분리, 검토용)
+collect_panel.py                # 2025~2026 longitudinal 패널 수집 (--dry-run 지원, classification 로직 없음)
 ```
 
 ## 실행
