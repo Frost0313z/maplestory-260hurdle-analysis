@@ -52,7 +52,15 @@ COHORTS = [
     dict(name="at260",    page=15000, target_level=260, level_tol=0, n=800, desc="260 정체 플래토 (rank ~3M) — 정착률/Fisher 분모 확보 위해 n 확대"),
     dict(name="past260",  page=10000, target_level=262, level_tol=1, desc="260 직후"),
     dict(name="burnend",  page=2500,  target_level=281, level_tol=1, desc="버닝 BEYOND 종료 지점"),
+    # climb: 앵커일 Lv.255~258 이면서 앵커 직전 14일간 레벨이 오른(모멘텀) 캐릭터.
+    #   "260 을 향해 실제로 오르고 있던" 인구를 표본으로 잡아 돌파율을 제대로 측정 (설계 변경 4).
+    dict(name="climb", page=18400, target_level=256, level_tol=2, n=300,
+         momentum=dict(ref_date="2026-06-04", min_gain=1),
+         desc="허들 등반 (Lv.255~258 + 앵커 직전 14일 레벨 상승)"),
 ]
+
+# climb 스크리닝 결과(수락된 캐릭터명) 캐시 — 재실행 시 재스크리닝 안 함
+CLIMB_ROSTER = DATA_DIR / "cohort_climb_roster.txt"
 
 CSV_COLUMNS = ["cohort", "character_name", "ocid", "date",
                "level", "exp", "exp_rate", "combat_power", "error_code"]
@@ -215,11 +223,49 @@ def fetch_ranking_pool(cohort: dict) -> list[str]:
                 seen.add(r["character_name"])
                 pool.append(r["character_name"])
                 levels.add(r["character_level"])
-    if len(pool) < n_target:
+    floor = n_target if not cohort.get("momentum") else n_target // 2   # momentum 은 스크리닝으로 더 줄어듦
+    if len(pool) < floor:
         raise RankingUnavailable(
-            f"[{cohort['name']}] 풀 {len(pool)}명 < 목표 {n_target} — SPAN/tol 조정 필요")
+            f"[{cohort['name']}] 풀 {len(pool)}명 < {floor} — SPAN/tol 조정 필요")
     print(f"  {cohort['name']}: 풀 {len(pool)}명, 레벨 {sorted(levels)} (목표 {target}±{tol})")
     return pool
+
+
+def screen_momentum(cohort: dict, pool: list[str]) -> list[str]:
+    """풀을 코호트 seed 로 셔플한 뒤, 앵커 직전(`ref_date`) 대비 레벨이 `min_gain` 이상
+    오른 캐릭터만 앞에서부터 `n` 명 채택. 결과는 CLIMB_ROSTER 에 캐시(재실행 시 재스크리닝 안 함)."""
+    n = cohort.get("n", SAMPLE_N)
+    if CLIMB_ROSTER.exists():
+        roster = [x for x in CLIMB_ROSTER.read_text(encoding="utf-8").splitlines() if x]
+        if len(roster) >= n:
+            print(f"  {cohort['name']}: 로스터 캐시 사용 ({len(roster)}명)")
+            return roster[:n]
+    mcfg = cohort["momentum"]
+    ref, gain = mcfg["ref_date"], mcfg["min_gain"]
+    shuffled = list(dict.fromkeys(pool))
+    random.Random(f"{RANDOM_SEED}-{cohort['name']}").shuffle(shuffled)
+    accepted: list[str] = []
+    for i, nm in enumerate(shuffled, 1):
+        ocid = get_ocid(nm)
+        if ocid is None:
+            continue
+        b_anchor = get_basic(ocid, ANCHOR)
+        b_ref = get_basic(ocid, ref)
+        if "error_code" in b_anchor or "error_code" in b_ref:
+            continue
+        if b_anchor["level"] is None or b_ref["level"] is None:
+            continue
+        if b_anchor["level"] - b_ref["level"] >= gain:
+            accepted.append(nm)
+            if len(accepted) >= n:
+                break
+        if i % 100 == 0:
+            print(f"  {cohort['name']}: 스크리닝 {i}명째, 수락 {len(accepted)}/{n}  (콜 {_call_count})")
+    CLIMB_ROSTER.write_text("\n".join(accepted), encoding="utf-8")
+    print(f"  {cohort['name']}: 스크리닝 완료 — {len(shuffled[:i])}명 중 {len(accepted)}명 수락")
+    if len(accepted) < n:
+        raise RankingUnavailable(f"[{cohort['name']}] 모멘텀 표본 {len(accepted)} < {n} — 풀/기준 조정 필요")
+    return accepted
 
 
 # ---- 수집 (행 단위 즉시 append, 재개 가능) ------------------------------
@@ -260,7 +306,10 @@ def collect_cohort(cohort: dict) -> bool:
     """수집 진행. 더 할 게 있으면(중단됨) False, 이 코호트 완료면 True."""
     out = DATA_DIR / f"cohort_{cohort['name']}.csv"
     done = _load_done(out)
-    names = sample_cohort(fetch_ranking_pool(cohort), cohort["name"], cohort.get("n", SAMPLE_N))
+    if cohort.get("momentum"):
+        names = screen_momentum(cohort, fetch_ranking_pool(cohort))
+    else:
+        names = sample_cohort(fetch_ranking_pool(cohort), cohort["name"], cohort.get("n", SAMPLE_N))
     ddates = daily_dates(ANCHOR, DAILY_DAYS)
     sdates = set(stat_dates(ANCHOR, STAT_OFFSETS))
     remaining = sum((nm, d) not in done for nm in names for d in ddates)
