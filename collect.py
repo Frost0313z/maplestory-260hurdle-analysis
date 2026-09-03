@@ -35,21 +35,21 @@ BACKOFF = [1, 2, 4]
 RANDOM_SEED = 42
 # live_ (정식) 키는 한도가 넉넉 → 전체 수집(n=300 기준 ~36,000콜, ~2.5h)을 1회에 완주.
 # 상한은 폭주 방지용. test_ (개발단계) 키면 1000 으로 낮추고 여러 날 나눠 실행.
-DAILY_CALL_BUDGET = 40000
+DAILY_CALL_BUDGET = 70000       # n=800 확대 + 35일로 총량 ~60k → 1회 완주 위해 상향 (live 키 실한도는 넉넉)
 DATA_DIR = Path(__file__).parent / "data"
 
 RANKING_WORLD_TYPE = 0          # 실측 확인 완료: 0=일반 서버
 ANCHOR = "2026-06-18"          # 여름 성장 이벤트 시작일 = 시계열 앵커
-DAILY_DAYS = 25               # D+0 .. D+24 매일 basic
-STAT_OFFSETS = [0, 8, 16, 24]  # 전투력은 이 오프셋에만
-SAMPLE_N = 300               # 코호트당 표본 (n 을 키워도 앞 n 명은 증분 유지 — sample_cohort 참고)
+DAILY_DAYS = 35               # D+0 .. D+34 매일 basic (25→35: 계획문서 §12 "30일 이후 미관측" 한계 해소)
+STAT_OFFSETS = [0, 8, 16, 24, 32]  # 전투력은 이 오프셋에만 (+32: 연장된 창에도 전투력 신호 유지)
+SAMPLE_N = 300               # 코호트당 기본 표본. 코호트 dict 에 n= 지정 시 우선 (n 키워도 앞 n 명 증분 유지)
 RANKING_PAGE_SPAN = 15       # 목표 page ± 이 범위의 인접 페이지를 풀링 (한 page = 200명)
 
 # 실측 랭킹 page↔레벨 (2026-06-18, world_type=0). page N = 랭킹 (N-1)*200+1 .. N*200
 # level_tol: 목표 레벨 ± 이 값 이내만 채택. at260(플래토 탈출률)은 정확히 260 만 → 0.
 COHORTS = [
     dict(name="approach", page=21000, target_level=251, level_tol=1, desc="허들 접근 (260 미만)"),
-    dict(name="at260",    page=15000, target_level=260, level_tol=0, desc="260 정체 플래토 (rank ~3M)"),
+    dict(name="at260",    page=15000, target_level=260, level_tol=0, n=800, desc="260 정체 플래토 (rank ~3M) — 정착률/Fisher 분모 확보 위해 n 확대"),
     dict(name="past260",  page=10000, target_level=262, level_tol=1, desc="260 직후"),
     dict(name="burnend",  page=2500,  target_level=281, level_tol=1, desc="버닝 BEYOND 종료 지점"),
 ]
@@ -203,6 +203,7 @@ def fetch_ranking_pool(cohort: dict) -> list[str]:
     """
     center, span = cohort["page"], RANKING_PAGE_SPAN
     tol, target = cohort["level_tol"], cohort["target_level"]
+    n_target = cohort.get("n", SAMPLE_N)
     seen, pool, levels = set(), [], set()
     for p in range(max(1, center - span), center + span + 1):
         data = _get("/ranking/overall",
@@ -214,9 +215,9 @@ def fetch_ranking_pool(cohort: dict) -> list[str]:
                 seen.add(r["character_name"])
                 pool.append(r["character_name"])
                 levels.add(r["character_level"])
-    if len(pool) < SAMPLE_N:
+    if len(pool) < n_target:
         raise RankingUnavailable(
-            f"[{cohort['name']}] 풀 {len(pool)}명 < 목표 {SAMPLE_N} — SPAN/tol 조정 필요")
+            f"[{cohort['name']}] 풀 {len(pool)}명 < 목표 {n_target} — SPAN/tol 조정 필요")
     print(f"  {cohort['name']}: 풀 {len(pool)}명, 레벨 {sorted(levels)} (목표 {target}±{tol})")
     return pool
 
@@ -237,19 +238,29 @@ def _load_done(path: Path) -> set[tuple[str, str]]:
 
 
 def _append_rows(path: Path, rows: list[dict]) -> None:
-    new = not path.exists()
-    with path.open("a", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-        if new:
-            w.writeheader()
-        w.writerows(rows)
+    # Windows: Excel 등이 CSV 를 열어두면 append 가 PermissionError. 몇 시간짜리 수집이
+    # 순간적 파일 락(백업·바이러스검사·잠깐 연 Excel)으로 죽지 않도록 잠깐 기다렸다 재시도.
+    for wait in (2, 5, 15, 30, 0):
+        try:
+            new = not path.exists()
+            with path.open("a", encoding="utf-8-sig", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+                if new:
+                    w.writeheader()
+                w.writerows(rows)
+            return
+        except PermissionError:
+            if not wait:
+                raise
+            print(f"  파일 락({path.name}) — {wait}s 후 재시도 (Excel 열려있으면 닫아주세요)")
+            time.sleep(wait)
 
 
 def collect_cohort(cohort: dict) -> bool:
     """수집 진행. 더 할 게 있으면(중단됨) False, 이 코호트 완료면 True."""
     out = DATA_DIR / f"cohort_{cohort['name']}.csv"
     done = _load_done(out)
-    names = sample_cohort(fetch_ranking_pool(cohort), cohort["name"])
+    names = sample_cohort(fetch_ranking_pool(cohort), cohort["name"], cohort.get("n", SAMPLE_N))
     ddates = daily_dates(ANCHOR, DAILY_DAYS)
     sdates = set(stat_dates(ANCHOR, STAT_OFFSETS))
     remaining = sum((nm, d) not in done for nm in names for d in ddates)
@@ -302,9 +313,9 @@ def main() -> None:
             break
 
     print(f"\n총 API 호출 수: {_call_count}")
-    expected = SAMPLE_N * DAILY_DAYS
     incomplete = [c["name"] for c in COHORTS
-                  if len(_load_done(DATA_DIR / f"cohort_{c['name']}.csv")) < expected * 0.98]
+                  if len(_load_done(DATA_DIR / f"cohort_{c['name']}.csv"))
+                     < c.get("n", SAMPLE_N) * DAILY_DAYS * 0.98]
     if stopped or incomplete:
         print(f"미완료: {incomplete or '(한도 도달)'} — 내일 다시 `python collect.py` 실행.")
     else:

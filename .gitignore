@@ -3,5 +3,7 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 data_collect.log
+data_collect_run.log
+.collect_pid
 nohup.out
 data_validate/
