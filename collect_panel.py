@@ -165,8 +165,9 @@ def sample(pool, method: str, *, n: int, per_cohort: int, seed: int,
            list_file: str | None) -> list[tuple[str, str]]:
     rng = random.Random(seed)
     if method == "list":
-        wanted = [x.strip() for x in Path(list_file).read_text(encoding="utf-8").splitlines() if x.strip()]
-        wset = set(wanted)
+        # 줄 목록. CSV(헤더 + 여러 컬럼)면 첫 컬럼(ocid) 사용, 'ocid' 헤더 줄은 건너뜀.
+        raw = [x.strip() for x in Path(list_file).read_text(encoding="utf-8-sig").splitlines() if x.strip()]
+        wanted = [ln.split(",")[0].strip() for ln in raw if ln.split(",")[0].strip().lower() != "ocid"]
         by_oc = {oc: (c, oc) for c, oc in pool}
         # list-file 은 ocid 또는 character_name 둘 다 허용 (name 은 cohort CSV 로 역매핑)
         name2oc = {}
@@ -205,14 +206,19 @@ def today_max() -> date:
 
 
 def build_snapshots(tier: str) -> list[dict]:
-    tiers = {"mvp": {"mvp"}, "full": {"mvp", "full"}, "followup": {"followup"}}
+    if tier == "pilot":
+        return list(cfg.PILOT_MILESTONES)
+    if tier == "followup":
+        return list(cfg.POST_EVENT_FOLLOWUP)
+    tiers = {"mvp": {"mvp"}, "full": {"mvp", "full"}}
     if tier not in tiers:
-        sys.exit(f"unknown tier: {tier} (mvp|full|followup)")
-    src = cfg.SNAPSHOTS if tier != "followup" else cfg.POST_EVENT_FOLLOWUP
-    return [s for s in src if s["tier"] in tiers[tier]]
+        sys.exit(f"unknown tier: {tier} (mvp|full|followup|pilot)")
+    return [s for s in cfg.SNAPSHOTS if s["tier"] in tiers[tier]]
 
 
 def endpoint_set(which: str) -> list[str]:
+    if which == "pilot":
+        return list(cfg.PILOT_ENDPOINTS)
     if which == "basic":
         return ["basic"]
     if which == "invest":
@@ -233,8 +239,8 @@ def date_ok(ep: str, d: str) -> bool:
 
 def make_tasks(chars, snapshots, eps, tier) -> list[dict]:
     """basic → 선택된 tier 의 모든 snapshot 날짜.
-    invest endpoint → mvp/full tier 는 INVEST_MILESTONES(pre-event), followup tier 는 followup 날짜."""
-    if tier == "followup":
+    invest endpoint → mvp/full tier 는 INVEST_MILESTONES(pre-event), followup/pilot tier 는 snapshot 날짜."""
+    if tier in ("followup", "pilot"):
         invest_dates = [(s["date"], s["role"]) for s in snapshots]
     else:
         invest_dates = [(d, "milestone") for d in cfg.INVEST_MILESTONES]
@@ -292,7 +298,7 @@ def print_plan(args, chars, snapshots, eps, tasks, done):
     mx = today_max().isoformat()
     print(f"  * 조회 가능 상한(T-1) = {mx} / 하한 = {cfg.API_MIN_DATE}")
 
-    inv_dates = [s["date"] for s in snapshots] if args.tier == "followup" else cfg.INVEST_MILESTONES
+    inv_dates = [s["date"] for s in snapshots] if args.tier in ("followup", "pilot") else cfg.INVEST_MILESTONES
     print(f"\n[endpoint]  {eps}")
     for ep in eps:
         m = cfg.ENDPOINTS[ep]
@@ -402,9 +408,9 @@ def main():
     ap.add_argument("--per-cohort", type=int, default=150, help="stratified 코호트당 표본")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--list-file", help="sampling=list 일 때 ocid 또는 character_name 줄 목록")
-    ap.add_argument("--tier", choices=["mvp", "full", "followup"], default="mvp")
+    ap.add_argument("--tier", choices=["mvp", "full", "followup", "pilot"], default="mvp")
     ap.add_argument("--endpoints", default="basic",
-                    help="basic | invest | all | 콤마구분(stat,union,...)")
+                    help="basic | invest | all | pilot | 콤마구분(stat,union,...)")
     ap.add_argument("--budget", type=int, default=0, help="이번 실행 최대 호출 수 (0=무제한)")
     ap.add_argument("--dry-run", action="store_true", help="호출 없이 계획만 출력")
     ap.add_argument("--yes", action="store_true", help="확인 프롬프트 건너뜀")
