@@ -3,6 +3,8 @@
 작성: 2026-09-04 · API 호출 **0** · 입력: `data/panel_basic.csv`, `data/pilot_targets.csv`, `data/cohort_climb.csv`
 코드: `analysis/retrospective_eda.py` · 수치: `data/retrospective_eda_summary.csv`
 
+**후속**: burstiness/concentration 의 circularity·robustness 검증은 `docs/burstiness_robustness.md`.
+
 **목적**: provisional label 을 증명하는 게 아니라, **Phase B 에서 검증할 leading indicator 후보를 좁힌다.**
 표본: `Seasonal_Parker` n=49, `Persistent_cand` n=61 (전부 lv(2026-06-12) ≥ 255).
 
