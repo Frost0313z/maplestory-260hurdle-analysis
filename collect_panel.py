@@ -362,11 +362,14 @@ def run(args):
         status_buf.append(dict(ocid=oc, date=d, endpoint=ep, http_status=status,
                                outcome=outcome, ts=int(time.time())))
         if ep == "basic":
-            lvl = body.get("character_level") if outcome in ("ok", "empty") else None
-            basic_buf.append(dict(cohort=t["cohort"], ocid=oc, date=d, role=t["role"],
-                                  level=lvl, exp=body.get("character_exp"),
-                                  exp_rate=body.get("character_exp_rate"),
-                                  error_code="" if outcome == "ok" else outcome))
+            # 일시 실패(RETRYABLE)는 다음 실행에서 재처리되므로 panel_basic 에 쓰지 않는다
+            # (안 그러면 resume 시 같은 (ocid,date) 가 두 번 append 됨). 확정 실패(http_400/404)는 남긴다.
+            if outcome not in RETRYABLE:
+                lvl = body.get("character_level") if outcome in ("ok", "empty") else None
+                basic_buf.append(dict(cohort=t["cohort"], ocid=oc, date=d, role=t["role"],
+                                      level=lvl, exp=body.get("character_exp"),
+                                      exp_rate=body.get("character_exp_rate"),
+                                      error_code="" if outcome == "ok" else outcome))
         elif outcome in ("ok", "empty"):
             rec = {"ocid": oc, "date": d, "role": t["role"], "cohort": t["cohort"],
                    "outcome": outcome, "endpoint": ep, "json": body}
