@@ -42,6 +42,12 @@ requirements.txt
 endpoint_feasibility_probe.md   # 캐릭터 endpoint 소급 범위 실측 (2023-12-22, ranking 4개월과 다름)
 panel_config.py                 # 이벤트 일정·스냅샷 격자·endpoint (코드에서 분리, 검토용)
 collect_panel.py                # 2025~2026 longitudinal 패널 수집 (--dry-run 지원, classification 로직 없음)
+build_pilot_sample.py           # panel_basic 궤적 → provisional label → data/pilot_targets.csv
+analysis/retrospective_eda.py   # Parker vs Persistent 후보 비교 (호출 0)
+analysis/burstiness_robustness.py  # concentration 산식 robustness·circularity 검증 (호출 0)
+docs/phase_b_analysis_plan.md    # Phase B 분석계획 FREEZE (RQ·outcome·H1~H5·features·states·claim boundary)
+docs/data_collection_checklist.md # Wave 1/2 실행 전·후 체크리스트 + V1~V11 validation
+report/                         # interactive 포트폴리오 리포트 (static HTML, index.html + data.js + render.js)
 ```
 
 ## 실행
@@ -54,6 +60,21 @@ jupyter nbconvert --to notebook --execute --inplace analysis.ipynb
 ```
 
 > 키는 `.env` 파일 대신 셸 환경변수(`$env:NXOPEN_API_KEY = "..."`)로 줘도 됩니다.
+
+### 포트폴리오 리포트 (interactive HTML)
+
+빌드 불필요. `report/index.html` 을 브라우저로 열면 됩니다 (desktop 권장).
+
+```bash
+# 그냥 열기
+start report/index.html          # Windows  (mac: open / linux: xdg-open)
+# 또는 로컬 서버 (file:// 캐시 이슈 없이)
+python -m http.server -d report 8000   # → http://localhost:8000
+```
+
+- 모든 수치는 `report/data.js` 한 곳에 모여 있습니다. `real` = 확보된 실제 분석 결과,
+  `pending` = Phase B(이벤트 종료 후) 미수집 영역(상태만, 미래 수치 없음).
+- Phase B 결과가 나오면 `data.js` 의 `pending.*` 를 실제 값으로 채우면 placeholder 가 자동으로 대체됩니다.
 
 ## 데이터 출처 · 라이선스
 
