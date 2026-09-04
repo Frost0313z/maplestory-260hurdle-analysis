@@ -7,3 +7,5 @@ data_collect_run.log
 .collect_pid
 nohup.out
 data_validate/
+
+panel_collect_run.log
