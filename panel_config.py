@@ -74,17 +74,21 @@ INVEST_MILESTONES = ["2025-06-12", "2025-12-12", "2026-06-12"]
 #             trajectory(min meaningful change / 변화 관측 interval 수 / post_slope / breadth)
 #             분포를 pilot 후 확인해 threshold 결정. (raw core 배열은 그대로 보존.)
 PILOT_ENDPOINTS = ["basic", "stat", "hexamatrix", "symbol", "union"]  # item-equipment, hexamatrix-stat 제외
+#   본 수집은 2 wave 로 분리 (B_post56 이 2026-11-11 이라 한 번에 못 받음):
+#     Wave 1 (2026-10-15 이후): A_* 3개 + B_event_end/post7/post14/post28  → 약 9,120 콜
+#     Wave 2 (2026-11-12 이후): B_post56 만                                → 약 1,425 콜
+#   `--tier pilot` 그대로 재실행하면 그 시점에 조회 가능한 날짜만 자동 수집(나머지는 T-1 초과로 skip).
 PILOT_MILESTONES = [
     # Phase A — retrospective context (누적 수준 + 시즌 반복 성장 여부. event/voluntary 분리 불가)
     dict(role="A_assemble_pre",   date="2025-06-12", tier="pilot"),
     dict(role="A_crown_pre",      date="2025-12-12", tier="pilot"),
     dict(role="A_overdrive_pre",  date="2026-06-12", tier="pilot"),  # OVERDRIVE 직전 baseline
     # Phase B — 분리 측정 (OVERDRIVE 종료 2026-09-16 이후 = 관측창 내 유일한 무-버닝 구간)
-    dict(role="B_event_end",      date="2026-09-15", tier="pilot"),  # 종료 직전(T-1)
-    dict(role="B_post7",          date="2026-09-23", tier="pilot"),
-    dict(role="B_post14",         date="2026-09-30", tier="pilot"),
-    dict(role="B_post28",         date="2026-10-14", tier="pilot"),
-    dict(role="B_post56",         date="2026-11-11", tier="pilot"),  # 연장 — 저강도 성장 관측력
+    dict(role="B_event_end",      date="2026-09-15", tier="pilot"),  # 종료 직전(T-1)  ┐ Wave 1
+    dict(role="B_post7",          date="2026-09-23", tier="pilot"),  #                 │
+    dict(role="B_post14",         date="2026-09-30", tier="pilot"),  #                 │
+    dict(role="B_post28",         date="2026-10-14", tier="pilot"),  #                 ┘
+    dict(role="B_post56",         date="2026-11-11", tier="pilot"),  # 연장 — 저강도 성장 관측력  ← Wave 2
 ]
 
 # ── API 물리적 한계 (probe 실측) ───────────────────────────────────
