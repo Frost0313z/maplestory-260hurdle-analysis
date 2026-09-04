@@ -19,15 +19,49 @@ signature 로만 보존하고 predictive feature 로 확정하지 않는다.** (
 
 ---
 
-## 1. Outcome 정의 (provisional, operational)
+## 0.5 분석 단위 — 2-layer framework (Character ≠ Account)
+
+메이플스토리는 유니온(리전) 때문에 **한 계정에서 여러 캐릭터를 육성**하는 것이 정상 progression 구조다.
+따라서 OCID 기반 분석에서 **"버닝 캐릭터가 260에서 멈춤" ≠ "유저가 게임에서 이탈함"** 이다.
+같은 계정에서 본캐/다른 부캐 성장, union level 상승이 있으면 그 캐릭터는 Parker 여도 **계정 전체
+progression 은 유지** 중일 수 있다.
+
+| Layer | 정의 | Phase B 측정 |
+|---|---|---|
+| **L1 · Character-level Progression Retention** | 이벤트에서 육성한 **그 캐릭터**가 종료 후에도 progression 을 지속하는가 | Level / HEXA / Symbol / CP (§1) — 4축 frame 유지 |
+| **L2 · Account-level Progression Retention Context** | 그 캐릭터가 파킹돼도 **계정 전체** progression 이 유지되는가 | **proxy only**: `union_level`, `union_artifact_level`. 실제 login retention·account churn 직접 측정 **불가** (§6 feasibility) |
+
+L2 는 항상 **proxy** 로 표기한다. Open API 로 접속 로그·계정 churn·다른 캐릭터 목록을 볼 수 없다(§6).
+
+### 용어 수정 (이 spec 및 이후 문서에 적용)
+
+- **Seasonal Parker** = "실패/이탈" 이 **아니다**. = *"해당 캐릭터의 event 이후 progression 이 크게
+  감소하거나 정지한 상태"* (character-scoped 서술).
+- **260 결과 표현**: ~~"91%가 260에서 이탈"~~ → *"260 도달 캐릭터의 91%에서 관측기간 내 해당
+  캐릭터의 261+ level progression 이 관측되지 않았다."* 이들이 다른 캐릭터를 플레이했는지, 계정이
+  비활성화됐는지는 현재 데이터로 알 수 없다. (climb 49/54 결과 자체는 유지.)
+
+### Exploratory business questions (추가)
+
+- **BQ-x1**: Seasonal Parker 중, 해당 캐릭터는 멈췄지만 **account-level progression(proxy)은 지속**
+  되는 집단이 존재하는가?
+- **BQ-x2 (상위)**: 성장 이벤트의 장기 전환을 평가할 때, **이벤트 캐릭터의 지속 육성**과 **계정 전체
+  progression 활성화**를 구분해야 하는가?
+- 제약: 내부 이벤트 목적·KPI 미상 → "넥슨의 목적은 account activation 이다" 같은 causal/intention
+  claim 금지. 관측된 유저 행동 수준으로만 기술한다.
+
+---
+
+## 1. Outcome 정의 — Layer 1 (Character-level, provisional, operational)
 
 Open API 로 로그인/접속 미관측 → "retained user" 대신 **post-event progression retained** 를 쓴다.
 "post-event" = **major burning 지원(OVERDRIVE HB MAX + BEYOND, 2026-09-16) 종료 이후** 이며
 pure voluntary 가 아니다 (평시 이벤트샵·Sunday Maple·보유 재화 존재).
 
 관측 창: `T0 = 2026-09-15`(종료 직전), 이후 `+7 / +14 / +28`(Wave 1), `+56`(Wave 2).
-4축 (frame locked): **Level** = grind/time · **HEXA** = character resource investment(거래 가능 →
-접속 아님) · **Symbol** = 장기/일일형 progression 참여 proxy · **CP** = 전환 결과. **Union** = 계정 context.
+4축 (frame locked, **Layer 1 = character-level**): **Level** = grind/time · **HEXA** = character
+resource investment(거래 가능 → 접속 아님) · **Symbol** = 장기/일일형 progression 참여 proxy ·
+**CP** = 전환 결과. **Union 은 Layer 2** 로 분리 (§1B).
 
 축별 변수 (모든 threshold 는 분포 확인 후 결정 — 여기서 고정 안 함):
 
@@ -50,11 +84,46 @@ pure voluntary 가 아니다 (평시 이벤트샵·Sunday Maple·보유 재화 �
 - **O1 (composite)** — post-event progression retained: `n_post_intervals_moved ≥ 2` **또는** `post_slope > 0` 를 {HEXA, Symbol, CP} 중 ≥1축에서 충족. (단일 transient bump 배제 목적)
 - **O2 (axis-specific 연속)** — `dX_post_full` 각각 (HEXA / Symbol / CP / Level)
 - **O3 (persistence ratio)** — 축별 `persistence_ratio`
-- **O4 (categorical state)** — High-intensity Persistent / Low-intensity Persistent / Seasonal Parker / Dormant-Churn-like. `dLevel_post` 낮음 + `dHEXA_post` 또는 `dSymbol_post` 유의 → Low-intensity Persistent. threshold 는 O2 분포 후.
+- **O4 (categorical state)** — Layer 1 축(character): High-intensity Persistent / Low-intensity
+  Persistent / Seasonal Parker / Dormant-like. `dLevel_post` 낮음 + `dHEXA_post` 또는 `dSymbol_post`
+  유의 → Low-intensity Persistent. threshold 는 O2 분포 후.
+- **O4b (Parker × account layer, exploratory)** — O4 에서 Seasonal Parker 로 분류된 캐릭터를 L2
+  proxy 로 분기 (§1B):
+  - Character Parker **+ account proxy 정지** → **Dormant / Churn-like candidate**
+  - Character Parker **+ account proxy 지속** → **Portfolio Rotation candidate** — 버닝 캐릭터는
+    파킹했으나 계정 내 다른 progression 으로 이동했을 *가능성*. **candidate 로만.** Union 변화만으로
+    확정하지 않는다 (다른 캐릭터 행동 직접 확인 불가, §6).
 
 **분석 성격**: 전부 associational/descriptive. causal 아님. pilot 285 는 provisional-label
 stratified(무작위 아님) → base rate 는 모집단 대표 아님. `event_period_new` 25 는 별도 세그먼트,
 260명과 합산 안 함.
+
+---
+
+## 1B. Account-level Progression Retention Context — Layer 2 (proxy only)
+
+Open API 로 접속·계정 churn·다른 캐릭터를 볼 수 없으므로(§6), **캐릭터 ocid 로 얻는 유일한
+계정 단위 신호 = Union aggregate**. 이를 "account context/control" 에서 한 단계 확장해 **account-level
+progression 의 보조 proxy** 로 사용 가능성을 검토한다 (확정 아님).
+
+| L2 변수 | 정의 | endpoint |
+|---|---|---|
+| `union_pre` / `union_post` | `union_level` at 2026-06-12 / +28 / +56 | `/user/union` (ocid 입력) |
+| `dUnion_post` | `union_level(+56) − union_level(T0)` | 〃 |
+| `union_artifact_pre/post`, `dUnionArtifact_post` | `union_artifact_level` 궤적 (아티팩트 AP 는 느린 계정 투자 sink) | `/user/union` 응답 필드 |
+
+**exploratory 조합 (Phase B)** — threshold hard-code 금지, 분포 확인 후 결정:
+
+| 분류 | character progression | union progression |
+|---|---|---|
+| **A. Character Persistent** | ↑ | (무관) |
+| **B. Character Parker + Account-active candidate** | ≈ 0 | `dUnion_post` > meaningful threshold |
+| **C. Character Parker + Account-dormant candidate** | ≈ 0 | `dUnion_post` ≈ 0 |
+
+**한계**: `union_level` flat ≠ account churn. Union 8000+ 등 이미 높은 수준에서는 부캐 레벨이 잘 안
+올라도(브레이크포인트 포화) 플레이할 수 있다 → Union flat 은 "계정 성장 신호 없음" 이지 "이탈"
+아님. `dUnion_post > 0` 은 계정 내 *어떤* 캐릭터가 레벨을 올렸거나 아티팩트 EXP 를 썼다는 coarse
+증거일 뿐, 어느 캐릭터인지·얼마나 활발한지는 알 수 없다.
 
 ---
 
@@ -104,6 +173,17 @@ stratified(무작위 아님) → base rate 는 모집단 대표 아님. `event_p
 | **confound / limitation** | ① **cohort 교란**: burnend 내부에선 event_growth 가 두 label 간 동일했음(4.5 vs 5), at260 에선 큰 차이 → cohort·start_level 통제 필수. ② EXP 쿠폰 오염 → `dLevel_OVERDRIVE` 는 "이벤트가 얼마나 밀어줬나" 의 노이즈 있는 proxy. ③ retrospective 상 seg4 최대 성장 캐릭터 10/110 뿐 → pilot 내 `dLevel_OVERDRIVE` 분산 작음 → 검정력 낮음. ④ provisional label selection. |
 | **검증 outcome** | O1, O2 — `dLevel_OVERDRIVE` ↔ post-event Δ 의 상관/계수가 **0 이하 또는 비유의** 임을 보이는 형태 (positive predictor 반증). |
 
+### C5 — account-level progression proxy (Union) 로 Parker 분기 (Layer 2, exploratory)
+
+| 항목 | 내용 |
+|---|---|
+| **feature 정의** | `dUnion_post = union_level(+56) − union_level(T0)`; `dUnionArtifact_post`; `union_pre` (포화도 통제용). §1B A/B/C 조합. |
+| **예상 방향** | character progression ≈ 0 (Seasonal Parker) 인 집단 안에서 `dUnion_post` 분포가 **이봉(bimodal)** 이면 Portfolio Rotation candidate 와 Dormant-like candidate 가 분리됨을 시사. 단봉이면 분리 신호 없음. |
+| **필요 endpoint** | `/user/union` (ocid 입력). 선택: `/user/union-artifact` (아티팩트 AP). |
+| **필요 milestone** | `2026-06-12`, `T0=2026-09-15`, `+28`, `+56`. |
+| **confound / limitation** | ① `union_level` 은 계정 aggregate — 어느 캐릭터가 기여했는지 불명, **분석 대상 캐릭터 자신의 레벨 상승도 포함**될 수 있음(이 캐릭터가 260→260 이면 기여 0 이라 순수 "다른 곳" 신호에 가깝지만 완전 분리는 아님). ② Union flat ≠ churn (포화). ③ `union_level` 상한 근처(≈8500) 캐릭터는 변화 폭 작음 → `union_artifact_level` 보조. ④ 표본: Parker 로 분류될 pilot 수가 O4 확정 후에야 정해짐. ⑤ **login/account churn 직접 측정 아님 — 전부 proxy.** |
+| **검증 outcome** | O4b (Parker → Portfolio Rotation candidate vs Dormant-like candidate). BQ-x1. **candidate 라벨만, 확정 금지.** |
+
 ---
 
 ## 3. 확정하지 않는 것 (descriptive signature 로만 유지)
@@ -118,14 +198,15 @@ stratified(무작위 아님) → base rate 는 모집단 대표 아님. `event_p
 
 ## 4. 데이터 상태 (후보별)
 
-| 후보 | 이미 보유 | Wave 1 (2026-10-15+) 필요 | Wave 2 (2026-11-12+) 필요 |
-|---|---|---|---|
-| C1 | — | `stat`/`hexamatrix`/`symbol` @ T0/+7/+14/+28 (285명) | 동 @ +56 |
-| C2 | `basic` 궤적 (panel_basic) | `stat`/`hexamatrix`/`symbol` @ Phase A 3시점 (투자 breadth 옵션) | — |
-| C3 | climb daily level + CP 5snap | (pilot 겹침분) `basic`/`stat` @ post-event | — |
-| C4 | `basic` @ 2026-06-12 (panel_basic) | `basic` @ T0(=09-15) + outcome endpoint | outcome @ +56 |
+| 후보 | Layer | 이미 보유 | Wave 1 (2026-10-15+) 필요 | Wave 2 (2026-11-12+) 필요 |
+|---|---|---|---|---|
+| C1 | L1 | — | `stat`/`hexamatrix`/`symbol` @ T0/+7/+14/+28 (285명) | 동 @ +56 |
+| C2 | L1 | `basic` 궤적 (panel_basic) | `stat`/`hexamatrix`/`symbol` @ Phase A 3시점 (투자 breadth 옵션) | — |
+| C3 | L1 | climb daily level + CP 5snap | (pilot 겹침분) `basic`/`stat` @ post-event | — |
+| C4 | L1 | `basic` @ 2026-06-12 (panel_basic) | `basic` @ T0(=09-15) + outcome endpoint | outcome @ +56 |
+| C5 | L2 | — | `/user/union` @ 2026-06-12 / T0 / +28 (285명) — 기존 PILOT_ENDPOINTS 에 `union` 포함됨 | `/user/union` @ +56 |
 
-호출 추정 (앞서 확정): Wave 1 ≈ 9,120 · Wave 2 ≈ 1,425. 실제 수집은 별도 승인.
+호출 추정 (앞서 확정, `union` 포함): Wave 1 ≈ 9,120 · Wave 2 ≈ 1,425. 실제 수집은 별도 승인.
 
 ---
 
@@ -135,4 +216,53 @@ stratified(무작위 아님) → base rate 는 모집단 대표 아님. `event_p
 - outcome O1~O4 threshold 는 Wave 1 분포 확인 후 결정 (지금 고정 안 함).
 - `+28`(4주) 은 HEXA/Symbol 저강도 성장의 측정 바닥 근처 — `+56` 이 주 판정 시점, `+28` 은 초기 신호.
 - Level 은 EXP 쿠폰 오염 → post-event 구간이 event-window 보다 낫지만 "pure voluntary" 아님.
-- 전 분석 associational. causal language 금지. `event_period_new` 25 는 분리 유지.
+- **Layer 2 는 전부 proxy**: login retention·account churn·portfolio rotation 을 직접 관측하지 못한다(§6).
+  Union 신호로는 "계정에 성장 활동이 있었다/없었다" 의 coarse 방향만, candidate 라벨만.
+- 전 분석 associational. causal/intention claim 금지. `event_period_new` 25 는 분리 유지.
+
+---
+
+## 6. Account portfolio tracking feasibility (API 호출 없이 조사)
+
+**질문**: 캐릭터 OCID 로 동일 계정의 다른 캐릭터·계정 식별자·과거 계정 캐릭터 목록을 추적할 수 있는가.
+
+### 근거 1 — 우리가 실제로 받은 응답 (definitive)
+
+`collect.py` / `collect_panel.py` 가 쓰는 엔드포인트와 smoke test raw dump(`data/panel_raw_*.jsonl`):
+
+| 엔드포인트 | 입력 | 응답에 계정 식별자 | 응답에 캐릭터 목록 |
+|---|---|---|---|
+| `/maplestory/v1/id` | `character_name` | 없음 (`ocid` 만 반환) | 없음 |
+| `/maplestory/v1/character/basic` | `ocid` (+`date`) | **없음** (world/class/gender/name/level/exp…) | 없음 |
+| `/maplestory/v1/character/stat` · `/hexamatrix` · `/symbol-equipment` | `ocid` (+`date`) | **없음** (smoke dump 확인) | 없음 |
+| `/maplestory/v1/user/union` | **`ocid`** (+`date`) | **없음** (`union_level`/`union_grade`/`union_artifact_level` 만, smoke dump 확인) | 없음 |
+| `/maplestory/v1/ranking/overall` | `date`/`world_type`/`page` | 없음 | 이름·레벨만 (ocid 조차 없음) |
+
+→ 우리가 호출하는 모든 엔드포인트는 **캐릭터 단위**이고, 응답 어디에도 account id 필드가 없다.
+`/user/union` 도 경로만 `user` 이지 입력은 ocid, 반환은 그 캐릭터가 속한 계정의 **union 집계값**뿐
+(계정 id·부캐 목록 없음).
+
+### 근거 2 — API 설계 (schema 지식, 잔여 불확실성 표시)
+
+- 넥슨 오픈 API(메이플)는 **캐릭터명 → ocid → 캐릭터 데이터** 흐름의 공개 데이터 API다. 임의
+  캐릭터의 ocid 에서 계정을 역식별하는 공개 경로는 없다.
+- `/maplestory/v1/character/list` 형태의 엔드포인트가 존재하더라도, 그것은 **API 키를 발급한
+  넥슨 계정 본인의 캐릭터 목록**(OAuth 성격)으로 알려져 있다. 임의 타 캐릭터의 계정 로스터
+  열거에는 쓸 수 없고, `date` 소급도 없다(현재 로스터). — 공개 문서 원문을 이번에 로드하지
+  못해 이 항목은 "확인된 설계상 그렇게 동작" 수준으로 표기하며, **결론은 바뀌지 않는다**
+  (우리 키/흐름으로는 타 계정 포트폴리오 접근 불가).
+
+### 결론
+
+| 질문 | 답 |
+|---|---|
+| OCID 로 동일 계정의 다른 캐릭터 목록 조회 | **불가** |
+| OCID → account identifier 역식별 | **불가** (어떤 응답에도 계정 id 없음) |
+| 다른 캐릭터들의 basic/stat progression 연결 | **불가** (연결 키 없음) |
+| 과거 date 기준 계정 캐릭터 목록 | **불가** (그런 파라미터·엔드포인트 없음) |
+| `/user/union` 이 쓰는 식별자 | **`ocid`** (계정 id 아님). 반환은 union 집계값만 |
+| 계정 단위로 얻을 수 있는 것 | `union_level`, `union_grade`, `union_artifact_level` — 그 캐릭터 ocid 한 건으로 얻는 **집계 proxy**. 어느 부캐가 기여했는지 불명 |
+
+→ **Layer 2 (account-level) 는 Union 집계 proxy 하나로만 근사 가능**하며, Portfolio Rotation 은
+확정 불가·candidate 전용이다. 이 한계는 spec 전반(§0.5·§1B·§5·C5)에 반영됨.
+새 계정 데이터 확보에는 별도 인증 범위 확대가 필요 (이번 범위 밖).
